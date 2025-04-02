@@ -204,6 +204,18 @@ The project includes an enhanced text detection implementation using the ResNet3
 - **Detailed Visualizations**: Generates visualizations of original images, probability maps, text masks, and overlays
 - **HTML Report Generation**: Creates an HTML report with metrics and visualizations
 
+### Example Output
+
+The text detection process generates visualizations like the one below, showing the original image, text probability map, text mask, and text overlay:
+
+![Text Detection Example](examples/text_detection/result_000.png)
+
+The visualization includes:
+- **Original Image**: The input document image
+- **Text Probability Map**: Heatmap showing the probability of text at each pixel
+- **Text Mask**: Binary mask showing detected text regions
+- **Text Overlay**: Original image with detected text regions highlighted
+
 ### Usage
 
 ```bash

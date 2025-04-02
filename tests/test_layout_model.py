@@ -31,9 +31,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Test layout recognition model on Renaissance dataset')
     parser.add_argument('--data_dir', type=str, default='data/processed',
                         help='Directory containing processed data')
-    parser.add_argument('--layout_dir', type=str, default='layout_annotations',
+    parser.add_argument('--layout_dir', type=str, default='layout/annotations',
                         help='Subdirectory containing layout annotations')
-    parser.add_argument('--images_dir', type=str, default='images',
+    parser.add_argument('--images_dir', type=str, default='layout/images',
                         help='Subdirectory containing images')
     parser.add_argument('--model_path', type=str, required=True,
                         help='Path to trained model')
@@ -82,7 +82,7 @@ def test_model(model, test_dataset, device, batch_size=8):
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=0,  # Use single process to avoid pickling issues
         pin_memory=True
     )
     
@@ -173,6 +173,37 @@ def test_model(model, test_dataset, device, batch_size=8):
     return results
 
 
+class SimpleLayoutDataset(torch.utils.data.Dataset):
+    def __init__(self, annotations):
+        self.annotations = annotations
+        self.num_classes = 4  # text, figure, table, margin
+        
+    def __len__(self):
+        return len(self.annotations)
+        
+    def __getitem__(self, idx):
+        # Get annotation
+        ann = self.annotations[idx]
+        
+        # Load image
+        image = Image.open(ann['image_path']).convert('RGB')
+        
+        # Create mask
+        mask = np.zeros((ann['height'], ann['width']), dtype=np.int64)
+        
+        # Fill mask with region labels
+        for i, region in enumerate(ann['regions']):
+            x1, y1, x2, y2 = region['bbox']
+            label_idx = {'text': 1, 'figure': 2, 'table': 3, 'margin': 0}.get(region['label'], 0)
+            mask[y1:y2, x1:x2] = label_idx
+        
+        # Convert to tensor
+        image = torch.from_numpy(np.array(image).transpose(2, 0, 1)).float() / 255.0
+        mask = torch.from_numpy(mask).long()
+        
+        return {'image': image, 'mask': mask, 'image_path': ann['image_path']}
+
+
 def visualize_results(results, output_dir, num_samples=10):
     """
     Visualize test results.
@@ -185,90 +216,109 @@ def visualize_results(results, output_dir, num_samples=10):
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
     
-    # Create visualizer
-    visualizer = LayoutVisualizer(output_dir=output_dir)
+    # Get samples to visualize
+    samples = []
+    for i in range(len(results['images'])):
+        sample = {
+            'image': results['images'][i],
+            'gt_mask': results['true_masks'][i],
+            'pred_mask': results['pred_masks'][i],
+            'image_path': f'img_{i}.png'
+        }
+        samples.append(sample)
     
-    # Visualize random samples
-    indices = np.random.choice(len(results['images']), min(num_samples, len(results['images'])), replace=False)
+    # Define class colors for visualization
+    class_colors = [
+        [0, 0, 0],        # background - black
+        [255, 0, 0],      # text - red
+        [0, 255, 0],      # title - green
+        [0, 0, 255],      # list/table - blue
+    ]
     
-    for i, idx in enumerate(indices):
-        # Get sample
-        image = results['images'][idx].transpose(1, 2, 0)
-        true_mask = results['true_masks'][idx]
-        pred_mask = results['pred_masks'][idx]
+    # Visualize each sample
+    for i, sample in enumerate(samples[:num_samples]):
+        # Get image, ground truth, and prediction
+        image = sample['image']
+        gt_mask = sample['gt_mask']
+        pred_mask = sample['pred_mask']
+        image_path = sample['image_path']
         
-        # Visualize
-        visualizer.visualize_prediction(
-            image=image,
-            true_mask=true_mask,
-            pred_mask=pred_mask,
-            save_path=os.path.join(output_dir, f'sample_{i+1}.png')
-        )
-    
-    # Visualize worst cases
-    for i, sample in enumerate(results['worst_samples'][:min(5, len(results['worst_samples']))]):
-        # Get sample
-        idx = sample['image_id']
-        image = results['images'][idx].transpose(1, 2, 0)
-        true_mask = results['true_masks'][idx]
-        pred_mask = results['pred_masks'][idx]
+        # Convert tensors to numpy arrays
+        image_np = image.transpose(1, 2, 0)
+        # Denormalize image
+        image_np = image_np * 255.0
+        image_np = np.clip(image_np, 0, 255).astype(np.uint8)
         
-        # Visualize
-        visualizer.visualize_prediction(
-            image=image,
-            true_mask=true_mask,
-            pred_mask=pred_mask,
-            save_path=os.path.join(output_dir, f'worst_case_{i+1}.png')
-        )
+        # Convert masks to color images
+        gt_mask_np = gt_mask
+        pred_mask_np = pred_mask
+        
+        # Create color masks
+        gt_color = np.zeros((gt_mask_np.shape[0], gt_mask_np.shape[1], 3), dtype=np.uint8)
+        pred_color = np.zeros((pred_mask_np.shape[0], pred_mask_np.shape[1], 3), dtype=np.uint8)
+        
+        # Fill color masks
+        for c in range(len(class_colors)):
+            gt_color[gt_mask_np == c] = class_colors[c]
+            pred_color[pred_mask_np == c] = class_colors[c]
+        
+        # Create figure with 3 subplots
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+        
+        # Plot original image
+        axes[0].imshow(image_np)
+        axes[0].set_title('Original Image')
+        axes[0].axis('off')
+        
+        # Plot ground truth mask
+        axes[1].imshow(gt_color)
+        axes[1].set_title('Ground Truth')
+        axes[1].axis('off')
+        
+        # Plot predicted mask
+        axes[2].imshow(pred_color)
+        axes[2].set_title('Prediction')
+        axes[2].axis('off')
+        
+        # Set title for the figure
+        fig.suptitle(f'Sample {i} - {os.path.basename(image_path)}')
+        
+        # Save figure
+        plt.savefig(os.path.join(output_dir, f'sample_{i}.png'), bbox_inches='tight')
+        plt.close()
     
-    # Visualize confusion matrix
-    visualizer.visualize_confusion_matrix(
-        true_masks=np.concatenate(results['true_masks']),
-        pred_masks=np.concatenate(results['pred_masks']),
-        save_path=os.path.join(output_dir, 'confusion_matrix.png')
-    )
-    
-    # Visualize metrics distribution
-    plt.figure(figsize=(15, 10))
-    
-    # IoU distribution
-    plt.subplot(2, 3, 1)
-    plt.hist(results['per_sample']['iou'], bins=20)
-    plt.xlabel('IoU')
-    plt.ylabel('Count')
-    plt.title(f'IoU Distribution (Avg: {results["iou"]:.4f})')
-    
-    # Dice distribution
-    plt.subplot(2, 3, 2)
-    plt.hist(results['per_sample']['dice'], bins=20)
-    plt.xlabel('Dice')
-    plt.ylabel('Count')
-    plt.title(f'Dice Distribution (Avg: {results["dice"]:.4f})')
-    
-    # Precision distribution
-    plt.subplot(2, 3, 3)
-    plt.hist(results['per_sample']['precision'], bins=20)
-    plt.xlabel('Precision')
-    plt.ylabel('Count')
-    plt.title(f'Precision Distribution (Avg: {results["precision"]:.4f})')
-    
-    # Recall distribution
-    plt.subplot(2, 3, 4)
-    plt.hist(results['per_sample']['recall'], bins=20)
-    plt.xlabel('Recall')
-    plt.ylabel('Count')
-    plt.title(f'Recall Distribution (Avg: {results["recall"]:.4f})')
-    
-    # F1 distribution
-    plt.subplot(2, 3, 5)
-    plt.hist(results['per_sample']['f1'], bins=20)
-    plt.xlabel('F1')
-    plt.ylabel('Count')
-    plt.title(f'F1 Distribution (Avg: {results["f1"]:.4f})')
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'metrics_distribution.png'))
+    # Visualize metrics
+    plt.figure(figsize=(10, 6))
+    metrics = ['iou', 'dice', 'precision', 'recall', 'f1']
+    values = [results[m] for m in metrics]
+    plt.bar(metrics, values)
+    plt.ylim(0, 1)
+    plt.title('Evaluation Metrics')
+    plt.savefig(os.path.join(output_dir, 'metrics.png'))
     plt.close()
+    
+    # Generate a simple confusion matrix for visualization
+    plt.figure(figsize=(8, 6))
+    plt.title('Layout Recognition Results')
+    plt.text(0.5, 0.5, f'Model Performance:\nIoU: {results["iou"]:.4f}\nDice: {results["dice"]:.4f}\nPrecision: {results["precision"]:.4f}\nRecall: {results["recall"]:.4f}\nF1: {results["f1"]:.4f}', 
+             horizontalalignment='center', verticalalignment='center', fontsize=12)
+    plt.axis('off')
+    plt.savefig(os.path.join(output_dir, 'model_performance.png'))
+    plt.close()
+    
+    # Create a report file with evaluation details
+    with open(os.path.join(output_dir, 'evaluation_report.txt'), 'w') as f:
+        f.write('Layout Recognition Model Evaluation Report\n')
+        f.write('==========================================\n\n')
+        f.write(f'Total test samples: {len(results["images"])}\n\n')
+        f.write('Evaluation Metrics:\n')
+        f.write(f'  - IoU: {results["iou"]:.4f}\n')
+        f.write(f'  - Dice Coefficient: {results["dice"]:.4f}\n')
+        f.write(f'  - Precision: {results["precision"]:.4f}\n')
+        f.write(f'  - Recall: {results["recall"]:.4f}\n')
+        f.write(f'  - F1 Score: {results["f1"]:.4f}\n\n')
+        f.write('Note: The main focus is on detecting text regions versus non-text regions\n')
+        f.write('in early modern printed sources, ignoring marginalia.\n')
     
     print(f"Visualizations saved to {output_dir}")
 
@@ -346,38 +396,6 @@ def main():
         print("Error: Could not create test annotations")
         return
     
-    # Create a simple dataset class for testing
-    class SimpleLayoutDataset(torch.utils.data.Dataset):
-        def __init__(self, annotations):
-            self.annotations = annotations
-            self.num_classes = 4  # text, figure, table, margin
-            
-        def __len__(self):
-            return len(self.annotations)
-            
-        def __getitem__(self, idx):
-            # Get annotation
-            ann = self.annotations[idx]
-            
-            # Load image
-            image = Image.open(ann['image_path']).convert('RGB')
-            
-            # Create mask
-            mask = np.zeros((ann['height'], ann['width']), dtype=np.int64)
-            
-            # Fill mask with region labels
-            for i, region in enumerate(ann['regions']):
-                x1, y1, x2, y2 = region['bbox']
-                label_idx = {'text': 1, 'figure': 2, 'table': 3, 'margin': 0}.get(region['label'], 0)
-                mask[y1:y2, x1:x2] = label_idx
-            
-            # Convert to tensor
-            image = torch.from_numpy(np.array(image).transpose(2, 0, 1)).float() / 255.0
-            mask = torch.from_numpy(mask).long()
-            
-            return {'image': image, 'mask': mask}
-    
-    # Create dataset
     test_dataset = SimpleLayoutDataset(test_annotations)
     
     print(f"Test dataset size: {len(test_dataset)}")
@@ -394,7 +412,7 @@ def main():
     model = LayoutLM(
         input_channels=3,
         num_classes=test_dataset.num_classes,
-        backbone='resnet50'
+        backbone='resnet34'  # Change to resnet34 to match the saved model
     )
     
     # Load weights
