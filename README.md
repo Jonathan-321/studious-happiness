@@ -39,7 +39,11 @@ renaissance-gsoc-2025/
 │   ├── layout_recognition/   # Layout recognition module
 │   │   ├── data_processing/  # Data processing for layout recognition
 │   │   ├── models/           # Layout recognition models
-│   │   ├── training/         # Training scripts and utilities
+│   │   │   ├── renaissance_model.py  # Original ResNet34-based model
+│   │   │   ├── layoutlmv3_model.py   # LayoutLMv3-based model
+│   │   │   └── unet_model.py         # U-Net-based model
+│   │   ├── postprocessing/   # Post-processing utilities
+│   │   ├── applications/     # Application scripts
 │   │   ├── evaluation/       # Evaluation metrics and utilities
 │   │   └── visualization/    # Visualization utilities
 │   ├── ocr/                  # OCR module
@@ -62,6 +66,8 @@ renaissance-gsoc-2025/
 
 ## Data Processing
 
+### Processing the Full Dataset
+
 The first step is to process the Renaissance dataset for all three tasks:
 
 ```bash
@@ -78,6 +84,24 @@ This will:
 3. Extract text regions for OCR
 4. Prepare text images for synthetic generation
 5. Split the dataset into training, validation, and testing sets
+
+### Processing the Test Data
+
+For testing purposes, you can process just the test data:
+
+```bash
+# Process the Renaissance test data
+python data/scripts/process_test_data.py \
+    --source_dir data/raw/test_sources \
+    --transcription_dir data/raw/test_transcriptions \
+    --output_dir data/processed
+```
+
+This will:
+1. Process source images for layout recognition
+2. Create layout annotations (or use dummy annotations if none are available)
+3. Process transcription files for OCR
+4. Organize the data in the appropriate directory structure
 
 ## Training Models
 
@@ -116,6 +140,83 @@ python src/synthetic_text/training/train_synthetic_text.py \
     --batch_size 16 \
     --learning_rate 2e-5 \
     --img_size 128
+```
+
+## Testing and Evaluation
+
+## Layout Recognition Models
+
+This project implements three different layout recognition models for text segmentation:
+
+### 1. ResNet34-based Model (Original)
+
+A binary segmentation model using ResNet34 as the backbone with a simple decoder head.
+
+```bash
+# Train the ResNet34 model
+python train_renaissance_model.py --train_dir data/renaissance/train --val_dir data/renaissance/val --output_dir models/renaissance
+
+# Test the ResNet34 model
+python test_renaissance_model.py --model_path models/renaissance/best_model.pth --image_path data/renaissance/val/sample.png
+
+# Run layout recognition on a directory
+python run_layout_recognition.py --input_dir data/renaissance/val --output_dir results/renaissance_recognition
+```
+
+### 2. LayoutLMv3-based Model
+
+A state-of-the-art model based on LayoutLMv3, which is specifically designed for document layout analysis.
+
+```bash
+# Test the LayoutLMv3 model
+python test_layoutlmv3_model.py --image_path data/renaissance/val/sample.png --refine --adaptive_threshold
+
+# Run layout recognition on a directory
+python run_layoutlmv3_recognition.py --input_dir data/renaissance/val --output_dir results/layoutlmv3_recognition --refine --adaptive_threshold
+```
+
+### 3. U-Net Model
+
+A U-Net-based model for binary segmentation, which is a popular architecture for image segmentation tasks.
+
+```bash
+# Train the U-Net model
+python train_unet_model.py --train_dir data/renaissance/train --val_dir data/renaissance/val --output_dir models/unet --generate_pseudo_masks
+
+# Test the U-Net model
+python test_unet_model.py --model_path models/unet/best_model.pth --image_path data/renaissance/val/sample.png --refine --adaptive_threshold
+
+# Run layout recognition on a directory
+python run_unet_recognition.py --input_dir data/renaissance/val --output_dir results/unet_recognition --refine --adaptive_threshold
+```
+
+## Text Detection
+
+The project includes an enhanced text detection implementation using the ResNet34 model with adaptive thresholding and post-processing refinements.
+
+### Features
+
+- **Adaptive Thresholding**: Automatically adjusts threshold values based on image content
+- **Post-Processing Refinements**: Applies morphological operations to improve detection accuracy
+- **Dark Area Focus**: Option to focus detection on dark areas (text is usually dark on light background)
+- **Region Filtering**: Removes small noise regions while preserving text
+- **Hole Filling**: Option to fill holes in text regions for better segmentation
+- **Detailed Visualizations**: Generates visualizations of original images, probability maps, text masks, and overlays
+- **HTML Report Generation**: Creates an HTML report with metrics and visualizations
+
+### Usage
+
+```bash
+# Run text detection with default parameters
+python run_text_detection.py --input_path data/renaissance/val --output_dir results/text_detection --model_path models/renaissance/best_model.pth
+
+# Run text detection with enhanced features
+python run_text_detection.py --input_path data/renaissance/val --output_dir results/text_detection_enhanced \
+    --model_path models/renaissance/best_model.pth --device cpu --adaptive_threshold --refine --fill_holes
+
+# Run text detection with focus on dark areas
+python run_text_detection.py --input_path data/renaissance/val --output_dir results/text_detection_dark \
+    --model_path models/renaissance/best_model.pth --device cpu --adaptive_threshold --refine --fill_holes --focus_dark_areas
 ```
 
 ## Testing and Evaluation
